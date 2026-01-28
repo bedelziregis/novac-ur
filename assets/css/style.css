@@ -219,6 +219,25 @@ body {
     border: 1px solid #f0f0f0;
 }
 
+.hero-shape-image {
+    width: 100%;
+    height: 100%;
+    max-width: 500px;
+    aspect-ratio: 1;
+    object-fit: contain;
+    animation: floatingAnimation 3s ease-in-out infinite;
+    filter: drop-shadow(0 20px 40px rgba(0, 0, 0, 0.15));
+}
+
+@keyframes floatingAnimation {
+    0%, 100% {
+        transform: translateY(0px);
+    }
+    50% {
+        transform: translateY(-20px);
+    }
+}
+
 /* ===== FEATURES SECTION ===== */
 .features-premium {
     background: #ffffff;
@@ -475,44 +494,54 @@ body {
 .footer-index-premium {
     background: #000000;
     color: #ffffff;
-    padding: 80px 30px 40px;
+    padding: 150px 30px 80px;
     border-top: 1px solid #222222;
+    min-height: 500px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
 }
 
 .footer-index-container {
-    max-width: 1400px;
-    margin: 0 auto;
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 60px;
-    margin-bottom: 60px;
+    gap: 80px;
+    margin-bottom: 150px;
+    width: 100%;
+    padding: 0 30px;
+    text-align: center;
 }
 
 .footer-section h4 {
     font-family: 'Playfair Display', serif;
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 600;
-    margin-bottom: 15px;
+    margin-bottom: 25px;
     letter-spacing: 1px;
 }
 
 .footer-section p {
-    font-size: 13px;
+    font-size: 14px;
     color: #999999;
     font-weight: 300;
-    margin-bottom: 20px;
+    margin-bottom: 30px;
+    line-height: 1.6;
 }
 
 .footer-section ul {
     list-style: none;
+    display: flex;
+    justify-content: center;
+    gap: 30px;
+    flex-wrap: wrap;
 }
 
 .footer-section ul li {
-    margin-bottom: 10px;
+    margin-bottom: 15px;
 }
 
 .footer-section ul li a {
-    font-size: 13px;
+    font-size: 14px;
     color: #999999;
     text-decoration: none;
     font-weight: 300;
@@ -525,12 +554,13 @@ body {
 
 .social-links {
     display: flex;
-    gap: 20px;
+    gap: 25px;
+    justify-content: center;
 }
 
 .social-icon {
-    width: 40px;
-    height: 40px;
+    width: 45px;
+    height: 45px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -538,6 +568,7 @@ body {
     color: #999999;
     text-decoration: none;
     transition: all 0.3s ease;
+    font-size: 16px;
 }
 
 .social-icon:hover {
@@ -546,21 +577,74 @@ body {
 }
 
 .footer-bottom {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding-top: 40px;
+    padding-top: 80px;
+    padding-bottom: 60px;
     border-top: 1px solid #222222;
     text-align: center;
 }
 
 .footer-bottom p {
-    font-size: 12px;
+    font-size: 13px;
     color: #999999;
     font-weight: 300;
     letter-spacing: 1px;
 }
 
 /* ===== RESPONSIVE DESIGN ===== */
+
+/* Large Desktop: 1920px and up */
+@media (min-width: 1920px) {
+    .footer-index-premium {
+        padding: 200px 50px 100px;
+        min-height: 600px;
+    }
+
+    .footer-index-container {
+        gap: 100px;
+        margin-bottom: 200px;
+    }
+
+    .footer-section h4 {
+        font-size: 20px;
+        margin-bottom: 30px;
+    }
+
+    .footer-section p {
+        font-size: 15px;
+        margin-bottom: 35px;
+    }
+
+    .footer-section ul li {
+        margin-bottom: 18px;
+    }
+
+    .footer-section ul li a {
+        font-size: 15px;
+    }
+
+    .footer-bottom {
+        padding-top: 100px;
+        padding-bottom: 80px;
+    }
+
+    .footer-bottom p {
+        font-size: 14px;
+    }
+}
+
+/* Desktop: 1024px to 1919px */
+@media (min-width: 1024px) and (max-width: 1919px) {
+    .footer-index-premium {
+        padding: 150px 40px 80px;
+        min-height: 550px;
+    }
+
+    .footer-index-container {
+        gap: 80px;
+        margin-bottom: 150px;
+    }
+}
+
 @media (max-width: 1024px) {
     .hero-index-content {
         grid-template-columns: 1fr;
@@ -662,11 +746,32 @@ body {
     }
 
     .footer-index-premium {
-        padding: 60px 20px 30px;
+        padding: 80px 20px 50px;
+        min-height: 350px;
     }
 
     .footer-index-container {
-        gap: 40px;
+        gap: 50px;
+        margin-bottom: 100px;
+    }
+
+    .footer-section h4 {
+        font-size: 16px;
+        margin-bottom: 20px;
+    }
+
+    .footer-section p {
+        font-size: 13px;
+        margin-bottom: 25px;
+    }
+
+    .footer-section ul li {
+        margin-bottom: 12px;
+    }
+
+    .footer-bottom {
+        padding-top: 70px;
+        padding-bottom: 50px;
     }
 }
 
@@ -752,6 +857,8 @@ body {
         font-size: 11px;
     }
 }
+
+.logo-container::before {
     content: '';
     position: absolute;
     top: 0;

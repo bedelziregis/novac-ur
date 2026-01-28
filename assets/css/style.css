@@ -502,14 +502,28 @@ body {
     justify-content: space-around;
 }
 
+/* Full-bleed footer on large screens: ensure black band stretches edge-to-edge */
+@media (min-width: 1024px) {
+    .footer-index-premium {
+        position: relative;
+        left: 50%;
+        right: 50%;
+        margin-left: -50vw;
+        margin-right: -50vw;
+        padding-left: calc(50vw - 50% + 30px);
+        padding-right: calc(50vw - 50% + 30px);
+    }
+}
+
 .footer-index-container {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-    gap: 80px;
-    margin-bottom: 150px;
+    max-width: 1400px;
+    margin: 0 auto 80px;
     width: 100%;
     padding: 0 30px;
-    text-align: center;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 40px;
 }
 
 .footer-section h4 {
@@ -531,9 +545,9 @@ body {
 .footer-section ul {
     list-style: none;
     display: flex;
-    justify-content: center;
-    gap: 30px;
+    gap: 20px;
     flex-wrap: wrap;
+    justify-content: flex-start;
 }
 
 .footer-section ul li {
@@ -554,8 +568,8 @@ body {
 
 .social-links {
     display: flex;
-    gap: 25px;
-    justify-content: center;
+    gap: 18px;
+    justify-content: flex-start;
 }
 
 .social-icon {
@@ -600,7 +614,7 @@ body {
     }
 
     .footer-index-container {
-        gap: 100px;
+        gap: 120px;
         margin-bottom: 200px;
     }
 
@@ -643,6 +657,10 @@ body {
         gap: 80px;
         margin-bottom: 150px;
     }
+
+    /* Left-align content on desktop for a more structured layout */
+    .footer-section { text-align: left; }
+    .social-links { justify-content: flex-start; }
 }
 
 @media (max-width: 1024px) {
@@ -667,6 +685,26 @@ body {
     .nav-right-section {
         gap: 20px;
     }
+}
+
+/* Mobile footer: stack sections and center */
+@media (max-width: 768px) {
+    .footer-index-premium {
+        padding: 60px 20px 40px;
+        min-height: auto;
+    }
+
+    .footer-index-container {
+        display: block;
+        margin-bottom: 40px;
+        padding: 0 16px;
+        text-align: center;
+    }
+
+    .footer-section { margin-bottom: 24px; text-align: center; }
+
+    .footer-section ul { justify-content: center; }
+    .social-links { justify-content: center; }
 }
 
 @media (max-width: 768px) {

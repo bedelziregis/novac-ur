@@ -1,5 +1,29 @@
 // ===== LOVE PAGE DISPLAY =====
 
+// IndexedDB helper (compatible avec admin.js storage)
+const MediaDB = {
+    dbName: 'novacoeur_db',
+    dbVersion: 1,
+    open: function() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(this.dbName, this.dbVersion);
+            req.onupgradeneeded = (e) => { e.target.result.createObjectStore('media', { keyPath: 'id' }); };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+    },
+    getMedia: async function(id) {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('media', 'readonly');
+            const store = tx.objectStore('media');
+            const r = store.get(id);
+            r.onsuccess = () => resolve(r.result);
+            r.onerror = () => reject(r.error);
+        });
+    }
+};
+
 // Get page ID from URL
 const urlParams = new URLSearchParams(window.location.search);
 const pageId = urlParams.get('id');
@@ -65,19 +89,38 @@ function displayLovePage(data) {
 }
 
 // Display Photos
-function displayPhotos(photos) {
+async function displayPhotos(photos) {
     const gallery = document.getElementById('photos-gallery');
     gallery.innerHTML = '';
-    
-    photos.forEach((photo, index) => {
+
+    for (let index = 0; index < photos.length; index++) {
+        const photo = photos[index];
+        let src = null;
+
+        if (photo.data) {
+            src = photo.data;
+        } else if (photo.id) {
+            try {
+                const m = await MediaDB.getMedia(photo.id);
+                if (m && m.blob) src = URL.createObjectURL(m.blob);
+            } catch (e) {
+                console.warn('[NOVACOEUR] Impossible de charger media photo', photo.id, e);
+            }
+        }
+
+        if (!src) continue;
+
+        // normalize to data property for compatibility with lightbox
+        photo.data = src;
+
         const photoItem = document.createElement('div');
         photoItem.className = 'gallery-item';
         photoItem.innerHTML = `
-            <img src="${photo.data}" alt="Photo ${index + 1}" data-index="${index}">
+            <img src="${src}" alt="Photo ${index + 1}" data-index="${index}">
         `;
         photoItem.addEventListener('click', () => openLightbox(index, photos));
         gallery.appendChild(photoItem);
-    });
+    }
 }
 
 // Lightbox
@@ -123,41 +166,253 @@ document.addEventListener('keydown', (e) => {
 });
 
 // Display Videos
-function displayVideos(videos) {
+async function displayVideos(videos) {
     const container = document.getElementById('videos-container');
     container.innerHTML = '';
-    
-    videos.forEach((video, index) => {
+
+    for (let i = 0; i < videos.length; i++) {
+        const video = videos[i];
+        let src = null;
+
+        if (video.data) {
+            src = video.data;
+        } else if (video.id) {
+            try {
+                const m = await MediaDB.getMedia(video.id);
+                if (m && m.blob) src = URL.createObjectURL(m.blob);
+            } catch (e) {
+                console.warn('[NOVACOEUR] Impossible de charger media video', video.id, e);
+            }
+        }
+
+        if (!src) continue;
+        video.data = src;
+
         const videoItem = document.createElement('div');
         videoItem.className = 'video-item';
         videoItem.innerHTML = `
             <video controls>
-                <source src="${video.data}" type="video/mp4">
+                <source src="${src}" type="video/mp4">
                 Votre navigateur ne supporte pas la lecture vidéo.
             </video>
-            <p>${video.name}</p>
+            <p>${video.name || ''}</p>
         `;
         container.appendChild(videoItem);
-    });
+    }
 }
 
 // Display Music
 function displayMusic(music) {
     if (!music) return; // Exit if no music
-    
+
     const audioElement = document.getElementById('background-music');
     const musicSection = document.getElementById('music-section');
-    
     if (!audioElement || !musicSection) return;
-    
-    // Only support custom music uploads
-    if (music.type === 'custom' && music.data) {
+
+    // If music.data available use it, otherwise try to fetch by id from IndexedDB
+    if (music.data) {
         audioElement.src = music.data;
         musicSection.style.display = 'block';
+        tryPlayAudio(audioElement);
+        return;
+    }
+
+    if (music.id) {
+        MediaDB.getMedia(music.id).then(m => {
+            if (m && m.blob) {
+                audioElement.src = URL.createObjectURL(m.blob);
+                musicSection.style.display = 'block';
+                tryPlayAudio(audioElement);
+            } else {
+                musicSection.style.display = 'none';
+            }
+        }).catch(e => {
+            console.warn('[NOVACOEUR] Impossible de charger musique', e);
+            musicSection.style.display = 'none';
+        });
     } else {
-        // Hide music section if no valid music data
         musicSection.style.display = 'none';
     }
+}
+
+// Try to play audio and provide a fallback UI if autoplay is blocked by the browser
+function tryPlayAudio(audioElem) {
+    if (!audioElem) return;
+    // Best-effort: attempt to play. Browsers may block; if blocked, show an activation button.
+    const p = audioElem.play();
+    if (p !== undefined) {
+        p.then(() => {
+            console.log('[NOVACOEUR] Musique lancée automatiquement');
+        }).catch((err) => {
+            console.warn('[NOVACOEUR] Autoplay bloqué:', err);
+            // Try muted autoplay as a fallback (some browsers allow muted autoplay)
+            audioElem.muted = true;
+            audioElem.play().then(() => {
+                console.log('[NOVACOEUR] Musique muette lancée automatiquement (muted autoplay)');
+                // Show unmute button to let user enable sound
+                showUnmuteButton(audioElem);
+            }).catch((err2) => {
+                console.warn('[NOVACOEUR] Muted autoplay échoué:', err2);
+                // Show a prominent overlay to request a user gesture
+                showPlayOverlay(audioElem);
+            });
+        });
+    }
+    // Also try again on first user interaction (some browsers allow play after interaction)
+    function onFirstInteraction() {
+        document.removeEventListener('click', onFirstInteraction);
+        audioElem.play().then(()=>console.log('[NOVACOEUR] Musique lancée après interaction')).catch(()=>{});
+    }
+    document.addEventListener('click', onFirstInteraction, { once: true });
+}
+
+// Try to trigger play on a variety of user interactions (click, touch, scroll, key)
+function attemptPlayOnInteraction(audioElem) {
+    if (!audioElem) return;
+    const tryPlay = () => {
+        audioElem.play().then(() => {
+            console.log('[NOVACOEUR] Musique lancée via interaction');
+            removeListeners();
+        }).catch(() => {});
+    };
+
+    const events = ['pointerdown', 'touchstart', 'scroll', 'keydown', 'click'];
+    function removeListeners() {
+        events.forEach(ev => document.removeEventListener(ev, tryPlay));
+    }
+
+    events.forEach(ev => document.addEventListener(ev, tryPlay, { once: true }));
+}
+
+function showMusicActivationButton(audioElem) {
+    // If button already exists, don't add another
+    if (document.getElementById('music-activate-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'music-activate-btn';
+    btn.textContent = 'Activer la musique';
+    btn.style.position = 'fixed';
+    btn.style.bottom = '18px';
+    btn.style.right = '18px';
+    btn.style.zIndex = '9999';
+    btn.style.padding = '10px 14px';
+    btn.style.background = '#ff4d6d';
+    btn.style.color = '#fff';
+    btn.style.border = 'none';
+    btn.style.borderRadius = '6px';
+    btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+    btn.style.cursor = 'pointer';
+    btn.addEventListener('click', () => {
+        audioElem.play().then(() => {
+            btn.remove();
+        }).catch((e) => {
+            console.warn('[NOVACOEUR] Impossible de lancer la musique après clic:', e);
+        });
+    });
+    document.body.appendChild(btn);
+}
+
+// Full-screen overlay prompting the user to tap/click to start music (works around autoplay rules)
+function showPlayOverlay(audioElem) {
+    if (!audioElem) return;
+    // Avoid duplicate overlays
+    if (document.getElementById('music-play-overlay')) return;
+
+    // Remove small activation/unmute buttons if present
+    const small = document.getElementById('music-activate-btn'); if (small) small.remove();
+    const unmute = document.getElementById('music-unmute-btn'); if (unmute) unmute.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'music-play-overlay';
+    overlay.style.position = 'fixed';
+    overlay.style.left = '0';
+    overlay.style.top = '0';
+    overlay.style.width = '100vw';
+    overlay.style.height = '100vh';
+    overlay.style.background = 'linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0.7))';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+    overlay.style.zIndex = '100000';
+
+    const box = document.createElement('div');
+    box.style.textAlign = 'center';
+    box.style.color = '#fff';
+    box.style.maxWidth = '90%';
+    box.style.padding = '24px';
+
+    const title = document.createElement('h2');
+    title.textContent = "Appuyez pour activer la musique";
+    title.style.marginBottom = '12px';
+    title.style.fontSize = '24px';
+
+    const hint = document.createElement('p');
+    hint.textContent = 'Votre navigateur bloque la lecture automatique. Un geste de votre part est nécessaire pour démarrer la bande sonore.';
+    hint.style.marginBottom = '20px';
+    hint.style.opacity = '0.95';
+
+    const btn = document.createElement('button');
+    btn.textContent = 'Jouer la musique';
+    btn.style.padding = '12px 22px';
+    btn.style.fontSize = '16px';
+    btn.style.border = 'none';
+    btn.style.borderRadius = '8px';
+    btn.style.background = '#ff4d6d';
+    btn.style.color = '#fff';
+    btn.style.cursor = 'pointer';
+
+    btn.addEventListener('click', async () => {
+        try {
+            // Unmute if muted
+            audioElem.muted = false;
+            await audioElem.play();
+            overlay.remove();
+            console.log('[NOVACOEUR] Musique lancée via overlay');
+        } catch (e) {
+            console.warn('[NOVACOEUR] Impossible de lancer la musique via overlay', e);
+        }
+    });
+
+    box.appendChild(title);
+    box.appendChild(hint);
+    box.appendChild(btn);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    // Also try to start on any interaction with the overlay area
+    overlay.addEventListener('pointerdown', async () => {
+        try { await audioElem.play(); overlay.remove(); } catch(e){}
+    }, { once: true });
+}
+
+function showUnmuteButton(audioElem) {
+    if (!audioElem) return;
+    if (document.getElementById('music-unmute-btn')) return;
+    const btn = document.createElement('button');
+    btn.id = 'music-unmute-btn';
+    btn.textContent = 'Activer le son';
+    btn.style.position = 'fixed';
+    btn.style.bottom = '18px';
+    btn.style.right = '18px';
+    btn.style.zIndex = '9999';
+    btn.style.padding = '10px 14px';
+    btn.style.background = '#ff4d6d';
+    btn.style.color = '#fff';
+    btn.style.border = 'none';
+    btn.style.borderRadius = '6px';
+    btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.2)';
+    btn.style.cursor = 'pointer';
+    btn.addEventListener('click', () => {
+        audioElem.muted = false;
+        audioElem.play().then(() => {
+            btn.remove();
+        }).catch((e) => {
+            console.warn('[NOVACOEUR] Impossible de lancer la musique après démutage:', e);
+        });
+    });
+    // Remove activation button if present
+    const existing = document.getElementById('music-activate-btn');
+    if (existing) existing.remove();
+    document.body.appendChild(btn);
 }
 
 // Add animations on scroll

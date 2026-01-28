@@ -110,6 +110,7 @@ function initializeAdminInterface() {
         console.error('[NOVACOEUR] Erreur dashboard:', e);
     }
     
+    // Adds a modal that lists pages and displays media loaded from IndexedDB for debugging
     try {
         setupTabNavigation();
         console.log('[NOVACOEUR] ✓ Navigation onglets activée');
@@ -130,6 +131,12 @@ function initializeAdminInterface() {
     } catch (e) {
         console.error('[NOVACOEUR] Erreur logout:', e);
     }
+    try {
+        setupDebugPanel();
+        console.log('[NOVACOEUR] ✓ Debug panel configuré');
+    } catch (e) {
+        console.warn('[NOVACOEUR] setupDebugPanel failed', e);
+    }
     
     console.log('[NOVACOEUR] ✓ Interface admin prête');
 }
@@ -138,14 +145,76 @@ function initializeAdminInterface() {
 const DataStore = {
     pages: JSON.parse(localStorage.getItem('lovePages')) || [],
     
-    savePage: function(pageData) {
+    savePage: async function(pageData) {
+        // Store media in IndexedDB and keep lightweight references in localStorage
+        const photosMeta = [];
+        const videosMeta = [];
+        let musicMeta = null;
+
+        try {
+            if (pageData.photos && pageData.photos.length) {
+                for (let p of pageData.photos) {
+                    if (p.data) {
+                        const id = 'm_' + Date.now() + '_' + Math.random().toString(36).substr(2,6);
+                        const blob = dataURLtoBlob(p.data);
+                        await MediaDB.putMedia(id, p.name || 'photo', p.type || blob.type, blob);
+                        photosMeta.push({ id, name: p.name, type: p.type });
+                    } else if (p.id) {
+                        photosMeta.push({ id: p.id, name: p.name, type: p.type });
+                    }
+                }
+            }
+
+            if (pageData.videos && pageData.videos.length) {
+                for (let v of pageData.videos) {
+                    if (v.data) {
+                        const id = 'm_' + Date.now() + '_' + Math.random().toString(36).substr(2,6);
+                        const blob = dataURLtoBlob(v.data);
+                        await MediaDB.putMedia(id, v.name || 'video', v.type || blob.type, blob);
+                        videosMeta.push({ id, name: v.name, type: v.type });
+                    } else if (v.id) {
+                        videosMeta.push({ id: v.id, name: v.name, type: v.type });
+                    }
+                }
+            }
+
+            if (pageData.music) {
+                if (pageData.music.data) {
+                    const id = 'm_' + Date.now() + '_' + Math.random().toString(36).substr(2,6);
+                    const blob = dataURLtoBlob(pageData.music.data);
+                    await MediaDB.putMedia(id, pageData.music.name || 'music', pageData.music.type || blob.type, blob);
+                    musicMeta = { id, name: pageData.music.name, type: pageData.music.type };
+                } else if (pageData.music.id) {
+                    musicMeta = { id: pageData.music.id, name: pageData.music.name, type: pageData.music.type };
+                }
+            }
+        } catch (e) {
+            console.error('[NOVACOEUR] Erreur lors de l\'enregistrement des médias dans IndexedDB', e);
+            throw e;
+        }
+
         const newPage = {
             id: Date.now(),
             createdAt: new Date().toISOString(),
-            ...pageData
+            clientName: pageData.clientName,
+            clientEmail: pageData.clientEmail,
+            offerType: pageData.offerType,
+            message: pageData.message,
+            photos: photosMeta,
+            videos: videosMeta,
+            music: musicMeta
         };
+
         this.pages.push(newPage);
-        localStorage.setItem('lovePages', JSON.stringify(this.pages));
+        try {
+            localStorage.setItem('lovePages', JSON.stringify(this.pages));
+        } catch (err) {
+            // If localStorage quota exceeded, rollback the in-memory array and surface error
+            this.pages = this.pages.filter(p => p.id !== newPage.id);
+            console.error('[NOVACOEUR] localStorage quota exceeded while saving page', err);
+            throw err;
+        }
+
         return newPage;
     },
 
@@ -174,6 +243,267 @@ const DataStore = {
         return this.pages.filter(p => p.offerType == offer).length;
     }
 };
+
+// --------------------
+// IndexedDB media store helpers
+// --------------------
+const MediaDB = {
+    dbName: 'novacoeur_db',
+    dbVersion: 1,
+
+    open: function() {
+        return new Promise((resolve, reject) => {
+            const req = indexedDB.open(this.dbName, this.dbVersion);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains('media')) {
+                    db.createObjectStore('media', { keyPath: 'id' });
+                }
+                if (!db.objectStoreNames.contains('pages')) {
+                    db.createObjectStore('pages', { keyPath: 'id' });
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+    },
+
+    putMedia: async function(id, name, type, blob) {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('media', 'readwrite');
+            const store = tx.objectStore('media');
+            const obj = { id, name, type, blob };
+            const r = store.put(obj);
+            r.onsuccess = () => resolve(id);
+            r.onerror = () => reject(r.error);
+        });
+    },
+
+    getMedia: async function(id) {
+        const db = await this.open();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction('media', 'readonly');
+            const store = tx.objectStore('media');
+            const r = store.get(id);
+            r.onsuccess = () => resolve(r.result);
+            r.onerror = () => reject(r.error);
+        });
+    }
+};
+
+function dataURLtoBlob(dataurl) {
+    const arr = dataurl.split(',');
+    const mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    let n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    while (n--) {
+        u8arr[n] = bstr.charCodeAt(n);
+    }
+    return new Blob([u8arr], { type: mime });
+}
+
+// Migrate any existing pages that contain embedded data URLs into IndexedDB (runs once)
+async function migrateExistingPages() {
+    if (!DataStore.pages || !DataStore.pages.length) return;
+    let migrated = false;
+    for (let page of DataStore.pages) {
+        // photos
+        if (page.photos && page.photos.length && page.photos[0] && page.photos[0].data) {
+            const newPhotos = [];
+            for (let p of page.photos) {
+                try {
+                    const id = 'm_' + Date.now() + '_' + Math.random().toString(36).substr(2,6);
+                    const blob = dataURLtoBlob(p.data);
+                    await MediaDB.putMedia(id, p.name || 'photo', p.type || blob.type, blob);
+                    newPhotos.push({ id, name: p.name, type: p.type });
+                    migrated = true;
+                } catch (e) {
+                    console.warn('[NOVACOEUR] Migration photo échouée', e);
+                }
+            }
+            page.photos = newPhotos;
+        }
+
+        // videos
+        if (page.videos && page.videos.length && page.videos[0] && page.videos[0].data) {
+            const newVideos = [];
+            for (let v of page.videos) {
+                try {
+                    const id = 'm_' + Date.now() + '_' + Math.random().toString(36).substr(2,6);
+                    const blob = dataURLtoBlob(v.data);
+                    await MediaDB.putMedia(id, v.name || 'video', v.type || blob.type, blob);
+                    newVideos.push({ id, name: v.name, type: v.type });
+                    migrated = true;
+                } catch (e) {
+                    console.warn('[NOVACOEUR] Migration video échouée', e);
+                }
+            }
+            page.videos = newVideos;
+        }
+
+        // music
+        if (page.music && page.music.data) {
+            try {
+                const id = 'm_' + Date.now() + '_' + Math.random().toString(36).substr(2,6);
+                const blob = dataURLtoBlob(page.music.data);
+                await MediaDB.putMedia(id, page.music.name || 'music', page.music.type || blob.type, blob);
+                page.music = { id, name: page.music.name, type: page.music.type };
+                migrated = true;
+            } catch (e) {
+                console.warn('[NOVACOEUR] Migration musique échouée', e);
+            }
+        }
+    }
+
+    if (migrated) {
+        try {
+            localStorage.setItem('lovePages', JSON.stringify(DataStore.pages));
+            console.log('[NOVACOEUR] ✓ Migration existante terminée');
+        } catch (e) {
+            console.error('[NOVACOEUR] Erreur en sauvegardant lovePages après migration', e);
+        }
+    }
+}
+
+// Call migration early
+document.addEventListener('DOMContentLoaded', () => {
+    try { migrateExistingPages(); } catch (e) { console.warn('[NOVACOEUR] migrateExistingPages failed', e); }
+});
+
+// --------------------
+// Debug panel for media (admin)
+// --------------------
+function setupDebugPanel() {
+    const openBtn = document.getElementById('open-media-debug');
+    const modal = document.getElementById('media-debug-modal');
+    const closeBtn = document.getElementById('close-media-debug');
+    const container = document.getElementById('media-debug-container');
+
+    if (!openBtn || !modal || !closeBtn || !container) return;
+
+    openBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        container.innerHTML = '<p>Chargement des pages...</p>';
+        modal.style.display = 'block';
+        try {
+            const pages = DataStore.getAllPages();
+            if (!pages || pages.length === 0) {
+                container.innerHTML = '<p>Aucune page trouvée.</p>';
+                return;
+            }
+
+            container.innerHTML = '';
+            for (let p of pages) {
+                const card = document.createElement('div');
+                card.className = 'debug-page-card';
+                card.style.border = '1px solid #ddd';
+                card.style.padding = '10px';
+                card.style.marginBottom = '10px';
+
+                const header = document.createElement('div');
+                header.innerHTML = `<strong>${p.clientName}</strong> — ${new Date(p.createdAt).toLocaleString()}`;
+                card.appendChild(header);
+
+                // Photos
+                const photoWrap = document.createElement('div');
+                photoWrap.innerHTML = '<div><em>Photos:</em></div>';
+                if (p.photos && p.photos.length) {
+                    const thumbs = document.createElement('div');
+                    thumbs.style.display = 'flex';
+                    thumbs.style.gap = '8px';
+                    for (let ph of p.photos) {
+                        const imgContainer = document.createElement('div');
+                        imgContainer.style.width = '120px';
+                        imgContainer.style.textAlign = 'center';
+
+                        const img = document.createElement('img');
+                        img.style.maxWidth = '100%';
+                        img.style.height = '80px';
+                        img.alt = ph.name || '';
+
+                        if (ph.data) {
+                            img.src = ph.data;
+                        } else if (ph.id) {
+                            try {
+                                const m = await MediaDB.getMedia(ph.id);
+                                if (m && m.blob) img.src = URL.createObjectURL(m.blob);
+                                else img.alt = 'media non trouvé';
+                            } catch (e) { img.alt = 'erreur chargement'; }
+                        } else {
+                            img.alt = 'aucune source';
+                        }
+
+                        imgContainer.appendChild(img);
+                        thumbs.appendChild(imgContainer);
+                    }
+                    photoWrap.appendChild(thumbs);
+                } else {
+                    photoWrap.innerHTML += '<div>Aucune photo</div>';
+                }
+                card.appendChild(photoWrap);
+
+                // Videos
+                const videoWrap = document.createElement('div');
+                videoWrap.innerHTML = '<div><em>Vidéos:</em></div>';
+                if (p.videos && p.videos.length) {
+                    for (let v of p.videos) {
+                        const vdiv = document.createElement('div');
+                        vdiv.style.marginTop = '6px';
+                        const vid = document.createElement('video');
+                        vid.controls = true;
+                        vid.style.maxWidth = '320px';
+                        if (v.data) {
+                            vid.src = v.data;
+                        } else if (v.id) {
+                            try {
+                                const m = await MediaDB.getMedia(v.id);
+                                if (m && m.blob) vid.src = URL.createObjectURL(m.blob);
+                                else vdiv.textContent = 'media vidéo non trouvé';
+                            } catch (e) { vdiv.textContent = 'erreur chargement vidéo'; }
+                        }
+                        vdiv.appendChild(vid);
+                        if (v.name) {
+                            const pName = document.createElement('div'); pName.textContent = v.name; vdiv.appendChild(pName);
+                        }
+                        videoWrap.appendChild(vdiv);
+                    }
+                } else {
+                    videoWrap.innerHTML += '<div>Aucune vidéo</div>';
+                }
+                card.appendChild(videoWrap);
+
+                // Music
+                const musicWrap = document.createElement('div');
+                musicWrap.innerHTML = '<div><em>Musique:</em></div>';
+                if (p.music) {
+                    const am = document.createElement('audio'); am.controls = true; am.style.display='block'; am.style.marginTop='6px';
+                    if (p.music.data) {
+                        am.src = p.music.data;
+                    } else if (p.music.id) {
+                        try {
+                            const m = await MediaDB.getMedia(p.music.id);
+                            if (m && m.blob) am.src = URL.createObjectURL(m.blob);
+                            else musicWrap.appendChild(document.createTextNode('media musique non trouvé'));
+                        } catch (e) { musicWrap.appendChild(document.createTextNode('erreur chargement musique')); }
+                    }
+                    musicWrap.appendChild(am);
+                } else {
+                    musicWrap.innerHTML += '<div>Aucune musique</div>';
+                }
+                card.appendChild(musicWrap);
+
+                container.appendChild(card);
+            }
+        } catch (err) {
+            container.innerHTML = '<div>Erreur lors du chargement des pages. Voir console.</div>';
+            console.error('[NOVACOEUR] debug panel error', err);
+        }
+    });
+
+    closeBtn.addEventListener('click', () => { modal.style.display = 'none'; container.innerHTML = ''; });
+}
 
 // Tab Navigation
 function setupTabNavigation() {
@@ -313,7 +643,7 @@ function setupPageForm() {
     });
 
     // Form Submit with manual validation
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
         e.preventDefault();
         console.log('[NOVACOEUR] Soumission formulaire');
         
@@ -348,11 +678,244 @@ function setupPageForm() {
         
         // All validations passed
         console.log('[NOVACOEUR] ✓ Tous les champs validés');
-        alert('✓ Formulaire validé avec succès!\n\nFonction de création en cours de développement');
+
+        // Assemble media data from temporary storages
+        const pageData = {
+            clientName: clientName.value.trim(),
+            clientEmail: clientEmail.value.trim(),
+            offerType: parseInt(offerType.value),
+            message: message.value.trim(),
+            photos: (window._nova_selected_photos || []).map(p => ({ name: p.name, type: p.type, data: p.data })),
+            videos: (window._nova_selected_videos || []).map(v => ({ name: v.name, type: v.type, data: v.data })),
+            music: window._nova_selected_music ? { name: window._nova_selected_music.name, type: window._nova_selected_music.type, data: window._nova_selected_music.data } : null
+        };
+
+        try {
+            const newPage = await DataStore.savePage(pageData);
+            console.log('[NOVACOEUR] ✓ Page sauvegardée:', newPage);
+            updateDashboard();
+            alert('Page créée avec succès!');
+
+            // Reset form and temporary storages
+            form.reset();
+            if (window.clearMediaPreviews) window.clearMediaPreviews();
+            loadManagedPages();
+        } catch (err) {
+            console.error('[NOVACOEUR] Erreur sauvegarde page:', err);
+            alert('Erreur lors de la création de la page (stockage). Essayez d\'effacer les données du localStorage ou de réduire la taille des fichiers.');
+        }
     });
     
     console.log('[NOVACOEUR] ✓ Formulaire initialisé');
 }
+
+// --------------------
+// Media handling helpers
+// --------------------
+function initMediaHandlers() {
+    // Temporary storages on window so other functions can access in console if needed
+    window._nova_selected_photos = window._nova_selected_photos || [];
+    window._nova_selected_videos = window._nova_selected_videos || [];
+    window._nova_selected_music = window._nova_selected_music || null;
+
+    const photosInput = document.getElementById('photos-input');
+    const uploadAreaPhotos = document.getElementById('upload-area-photos');
+    const photosList = document.getElementById('photos-list');
+
+    const videosInput = document.getElementById('videos-input');
+    const uploadAreaVideos = document.getElementById('upload-area-videos');
+    const videosList = document.getElementById('videos-list');
+
+    const customMusicInput = document.getElementById('custom-music');
+    const uploadAreaMusic = document.getElementById('upload-area-music');
+    const customMusicDisplay = document.getElementById('custom-music-display');
+
+    // Click to open file pickers
+    if (uploadAreaPhotos && photosInput) uploadAreaPhotos.addEventListener('click', () => photosInput.click());
+    if (uploadAreaVideos && videosInput) uploadAreaVideos.addEventListener('click', () => videosInput.click());
+    if (uploadAreaMusic && customMusicInput) uploadAreaMusic.addEventListener('click', () => customMusicInput.click());
+
+    // Drag & drop helpers
+    function enableDragDrop(area, handler) {
+        if (!area) return;
+        area.addEventListener('dragover', (e) => { e.preventDefault(); area.classList.add('dragover'); });
+        area.addEventListener('dragleave', (e) => { e.preventDefault(); area.classList.remove('dragover'); });
+        area.addEventListener('drop', (e) => { e.preventDefault(); area.classList.remove('dragover'); handler(e.dataTransfer.files); });
+    }
+
+    enableDragDrop(uploadAreaPhotos, (files) => handleFiles(files, 'photo'));
+    enableDragDrop(uploadAreaVideos, (files) => handleFiles(files, 'video'));
+    enableDragDrop(uploadAreaMusic, (files) => handleFiles(files, 'music'));
+
+    // File input change handlers
+    if (photosInput) photosInput.addEventListener('change', (e) => handleFiles(e.target.files, 'photo'));
+    if (videosInput) videosInput.addEventListener('change', (e) => handleFiles(e.target.files, 'video'));
+    if (customMusicInput) customMusicInput.addEventListener('change', (e) => handleFiles(e.target.files, 'music'));
+
+    function handleFiles(fileList, kind) {
+        const files = Array.from(fileList || []);
+        if (files.length === 0) return;
+
+        const offer = document.getElementById('offer-type') ? document.getElementById('offer-type').value : null;
+        const config = offerConfig[offer] || { photos: 5, videos: 0, music: false };
+
+        files.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                const data = evt.target.result;
+                if (kind === 'photo') {
+                    if (window._nova_selected_photos.length >= (config.photos || 5)) {
+                        alert(`Nombre maximal de photos atteint (${config.photos})`);
+                        return;
+                    }
+                    const obj = { name: file.name, type: file.type, size: file.size, data };
+                    window._nova_selected_photos.push(obj);
+                    addPhotoPreview(obj, photosList);
+                } else if (kind === 'video') {
+                    if ((config.videos || 0) === 0) { alert('Cette offre ne permet pas de télécharger de vidéo'); return; }
+                    if (window._nova_selected_videos.length >= (config.videos || 1)) { alert(`Nombre maximal de vidéos atteint (${config.videos})`); return; }
+                    const obj = { name: file.name, type: file.type, size: file.size, data };
+                    window._nova_selected_videos.push(obj);
+                    addVideoPreview(obj, videosList);
+                } else if (kind === 'music') {
+                    if (!config.music) { alert('Cette offre ne permet pas de musique personnalisée'); return; }
+                    const obj = { name: file.name, type: file.type, size: file.size, data };
+                    window._nova_selected_music = obj;
+                    addMusicPreview(obj, customMusicDisplay);
+                }
+            };
+
+            // Validate file type quickly
+            reader.readAsDataURL(file);
+        });
+    }
+
+    function addPhotoPreview(photoObj, container) {
+        if (!container) return;
+        const item = document.createElement('div');
+        item.className = 'media-item photo-item';
+        item.innerHTML = `
+            <img src="${photoObj.data}" alt="${photoObj.name}" />
+            <div class="media-meta">${photoObj.name}</div>
+            <button class="btn-remove" title="Supprimer">&times;</button>
+        `;
+        const btn = item.querySelector('.btn-remove');
+        btn.addEventListener('click', () => {
+            const idx = window._nova_selected_photos.indexOf(photoObj);
+            if (idx !== -1) window._nova_selected_photos.splice(idx, 1);
+            item.remove();
+        });
+        container.appendChild(item);
+    }
+
+    function addVideoPreview(videoObj, container) {
+        if (!container) return;
+        const item = document.createElement('div');
+        item.className = 'media-item video-item';
+        item.innerHTML = `
+            <video src="${videoObj.data}" controls preload="metadata" width="220"></video>
+            <div class="media-meta">${videoObj.name}</div>
+            <button class="btn-remove" title="Supprimer">&times;</button>
+        `;
+        const btn = item.querySelector('.btn-remove');
+        btn.addEventListener('click', () => {
+            const idx = window._nova_selected_videos.indexOf(videoObj);
+            if (idx !== -1) window._nova_selected_videos.splice(idx, 1);
+            item.remove();
+        });
+        container.appendChild(item);
+    }
+
+    function addMusicPreview(musicObj, container) {
+        if (!container) return;
+        container.innerHTML = '';
+        const item = document.createElement('div');
+        item.className = 'media-item music-item';
+        item.innerHTML = `
+            <audio src="${musicObj.data}" controls preload="metadata"></audio>
+            <div class="media-meta">${musicObj.name}</div>
+            <button class="btn-remove" title="Supprimer">&times;</button>
+        `;
+        const btn = item.querySelector('.btn-remove');
+        btn.addEventListener('click', () => {
+            window._nova_selected_music = null;
+            item.remove();
+        });
+        container.appendChild(item);
+    }
+
+    window.clearMediaPreviews = function() {
+        window._nova_selected_photos = [];
+        window._nova_selected_videos = [];
+        window._nova_selected_music = null;
+        if (photosList) photosList.innerHTML = '';
+        if (videosList) videosList.innerHTML = '';
+        if (customMusicDisplay) customMusicDisplay.innerHTML = '';
+    };
+
+    // Preview button (renders a quick preview using selected media)
+    const previewBtn = document.getElementById('preview-btn');
+    if (previewBtn) {
+        previewBtn.addEventListener('click', () => {
+            const previewModal = document.getElementById('preview-modal');
+            const previewContainer = document.getElementById('preview-container');
+            if (!previewModal || !previewContainer) return;
+            previewContainer.innerHTML = '';
+
+            const title = document.createElement('h2');
+            title.textContent = document.getElementById('client-name').value || 'Aperçu Page d\'amour';
+            previewContainer.appendChild(title);
+
+            const msg = document.createElement('p');
+            msg.textContent = document.getElementById('message').value || '';
+            previewContainer.appendChild(msg);
+
+            // Photos
+            const photos = window._nova_selected_photos || [];
+            if (photos.length) {
+                const gallery = document.createElement('div');
+                gallery.className = 'preview-gallery';
+                photos.forEach(p => {
+                    const img = document.createElement('img');
+                    img.src = p.data;
+                    img.alt = p.name;
+                    gallery.appendChild(img);
+                });
+                previewContainer.appendChild(gallery);
+            }
+
+            // Videos
+            const videos = window._nova_selected_videos || [];
+            if (videos.length) {
+                videos.forEach(v => {
+                    const vid = document.createElement('video');
+                    vid.src = v.data;
+                    vid.controls = true;
+                    vid.width = 480;
+                    previewContainer.appendChild(vid);
+                });
+            }
+
+            // Music
+            if (window._nova_selected_music) {
+                const a = document.createElement('audio');
+                a.src = window._nova_selected_music.data;
+                a.controls = true;
+                a.autoplay = false;
+                previewContainer.appendChild(a);
+            }
+
+            previewModal.style.display = 'block';
+            const closeBtn = document.getElementById('close-preview');
+            if (closeBtn) closeBtn.addEventListener('click', () => previewModal.style.display = 'none');
+        });
+    }
+}
+
+// Initialize media handlers on script load (if admin is visible)
+document.addEventListener('DOMContentLoaded', () => {
+    try { initMediaHandlers(); } catch (e) { console.warn('[NOVACOEUR] initMediaHandlers failed', e); }
+});
 
 // Load Managed Pages
 function loadManagedPages() {
